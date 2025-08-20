@@ -25,7 +25,31 @@ except Exception as exc:  # pragma: no cover - optional runtime dependency
     completion = None  # type: ignore
 
 
-_CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9+\-_.]*\n([\s\S]*?)```", re.MULTILINE)
+_CODE_BLOCK_RE = re.compile(r"[a-zA-Z0-9+\-_.]*\n([\s\S]*?)", re.MULTILINE)
+
+
+def _compose_user_msg(file_name: str, code: str) -> str:
+    """Return the composed user message including filename and original code."""
+    return "".join([f"Perfect this code file: {file_name}.\n\n", "Original code:\n", code])
+
+
+def _build_api_kwargs_for_openrouter(model: str) -> tuple[str, dict]:
+    """Return possibly-prefixed model and api kwargs when OPENROUTER_API_KEY is set."""
+    api_kwargs: dict = {}
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    if openrouter_key:
+        if not model.startswith("openrouter/"):
+            model = f"openrouter/{model}"
+        api_kwargs = {
+            "api_key": openrouter_key,
+            "api_base": os.environ.get("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1"),
+            "extra_headers": {
+                # Optional but recommended by OpenRouter
+                "HTTP-Referer": os.environ.get("OPENROUTER_SITE_URL", "https://openrouter.ai"),
+                "X-Title": os.environ.get("OPENROUTER_APP_NAME", "Polarity Benchmarks"),
+            },
+        }
+    return model, api_kwargs
 
 
 def extract_code_from_text(text: str) -> str:
@@ -119,41 +143,24 @@ def perfect_code_with_model(
 **9. CONSISTENCY WITH STANDARDS TASKS:**
 - Benchmark: Code adheres to language-specific and team-defined standards
 - Look for: Style guide violations, inconsistent error handling patterns, mixed frameworks
-- Create tasks for: PEP 8 violations (Python), inconsistent naming conventions, mixed coding patterns
+- Create tasks for: Style guide violations, inconsistent error handling patterns, mixed frameworks
 - Example task: "Improve consistency in utils module: convert camelCase to snake_case (PEP 8), standardize error handling patterns across all functions, consistent import ordering"
 
 **10. ARCHITECTURE TASKS (TypeScript/JavaScript):**
 - Benchmark: Codebase follows scalable, modular, and maintainable front-end architecture principles
 - Look for: oversized React/TSX components (>300 LOC), tight coupling between UI layers, scattered utilities, excessive prop-drilling, inconsistent folder structure, missing separation of concerns
-- Create tasks for: Splitting large components, extracting reusable hooks or utilities, reorganizing files into feature-based folders, adopting atomic design layers, introducing Context/ state-management to replace deep prop chains, extracting UI sub-components, enforcing clear import boundaries
+- Create tasks for: Splitting large components, extracting reusable hooks or utilities, reorganizing files into feature-based folders, adopting atomic design layers, extracting UI sub-components, enforcing clear import boundaries
 - Example task: "Improve architecture in src/components/Sidebar.tsx: split 700-line component into SidebarMain.tsx, SidebarItem.tsx, SidebarUtils.ts; move to components/sidebar/ folder; introduce React Context for shared state; add barrel export index.ts"
 """
     )
 
-    user_msg = (
-        f"Perfect this code file: {file_name}.\n\n"
-        "Original code:\n" + code
-    )
+    user_msg = _compose_user_msg(file_name, code)
 
     if extra_instructions:
-        user_msg = extra_instructions.strip() + "\n\n" + user_msg
+        user_msg = "\n\n".join([extra_instructions.strip(), user_msg])
 
     # Route via OpenRouter if OPENROUTER_API_KEY is present
-    api_kwargs = {}
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if openrouter_key:
-        # Ensure model is prefixed for LiteLLM's provider router
-        if not model.startswith("openrouter/"):
-            model = f"openrouter/{model}"
-        api_kwargs = {
-            "api_key": openrouter_key,
-            "api_base": os.environ.get("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1"),
-            "extra_headers": {
-                # Optional but recommended by OpenRouter
-                "HTTP-Referer": os.environ.get("OPENROUTER_SITE_URL", "https://openrouter.ai"),
-                "X-Title": os.environ.get("OPENROUTER_APP_NAME", "Polarity Benchmarks"),
-            },
-        }
+    model, api_kwargs = _build_api_kwargs_for_openrouter(model)
 
     resp = completion(
         model=model,
@@ -173,5 +180,3 @@ def perfect_code_with_model(
 
     new_code = extract_code_from_text(content)
     return new_code or code
-
-
