@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 from typing import Any, Dict
 
 import requests
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 # 1) HTTP without timeout and verify=False (insecure)
@@ -25,15 +28,38 @@ def fetch_insecure(url: str) -> int:
 
 # 2) Unsafe YAML load (execute arbitrary constructors)
 def parse_yaml_unsafe(text: str) -> Any:
-    # nosec: This is intentionally vulnerable for scanning
-    return yaml.load(text, Loader=yaml.Loader)
+    # Use safe_load to avoid arbitrary constructor execution
+    try:
+        return yaml.safe_load(text)
+    except Exception:
+        logger.exception("Failed to parse YAML safely")
+        return None
 
 
 # 3) Shell command with user input (command injection risk)
 def run_shell_unsafe(user_input: str) -> str:
-    # nosec: intentionally uses shell=True
-    proc = subprocess.run(f"echo {user_input}", shell=True, capture_output=True, text=True)
-    return proc.stdout.strip()
+    # Validate and sanitize user input before passing to subprocess
+    try:
+        if not isinstance(user_input, str):
+            logger.error("run_shell_unsafe: user_input must be a string")
+            return ""
+        if len(user_input) == 0:
+            logger.error("run_shell_unsafe: empty input")
+            return ""
+        if len(user_input) > 1024:
+            logger.error("run_shell_unsafe: input exceeds maximum allowed length")
+            return ""
+        if "\x00" in user_input or "\n" in user_input or "\r" in user_input:
+            logger.error("run_shell_unsafe: input contains disallowed control characters")
+            return ""
+
+        # Use argument list instead of shell=True to avoid shell interpretation
+        args = ["echo", user_input]
+        proc = subprocess.run(args, capture_output=True, text=True)
+        return proc.stdout.strip()
+    except Exception:
+        logger.exception("run_shell_unsafe: failed to run subprocess")
+        return ""
 
 
 # 4) Weak hashing (MD5) and unsalted password storage
