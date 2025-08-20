@@ -1,4 +1,7 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable, Type, Generator
+import logging
+import time
+import random
 
 from fastapi import (
     BackgroundTasks,
@@ -15,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+import requests
+from requests.exceptions import RequestException, Timeout
 
 app = FastAPI(title="Benchmarkv01 API Example")
 
@@ -26,6 +31,55 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger = logging.getLogger(__name__)
+
+
+def retry_on_exception(
+    max_attempts: int = 3,
+    initial_backoff: float = 0.5,
+    backoff_factor: float = 2.0,
+    exceptions: Type[BaseException] = RequestException,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """
+    Decorator that retries the wrapped callable on specified exceptions using
+    exponential backoff with jitter.
+    """
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            attempt = 0
+            backoff = initial_backoff
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as exc:
+                    attempt += 1
+                    if attempt >= max_attempts:
+                        logger.warning(
+                            "Operation failed after %d attempts: %s", attempt, exc
+                        )
+                        raise
+                    sleep_for = backoff + random.uniform(0, backoff)
+                    logger.info(
+                        "Operation failed (attempt %d/%d). Retrying in %.2fs: %s",
+                        attempt,
+                        max_attempts,
+                        sleep_for,
+                        exc,
+                    )
+                    time.sleep(sleep_for)
+                    backoff *= backoff_factor
+        return wrapper
+    return decorator
+
+
+@retry_on_exception(max_attempts=3, initial_backoff=0.5, backoff_factor=2.0, exceptions=RequestException)
+def _get_with_retry(url: str, timeout: float = 5.0, **kwargs: Any) -> requests.Response:
+    """
+    Perform a GET request with a sensible timeout and retry behavior.
+    Raises the originating requests exception if all retries fail.
+    """
+    return requests.get(url, timeout=timeout, **kwargs)
 
 
 class InputItem(BaseModel):
@@ -46,7 +100,7 @@ class HealthStatus(BaseModel):
     version: str
 
 
-def get_fake_db():
+def get_fake_db() -> Generator[Dict[str, bool], None, None]:
     """A minimal dependency that mimics a DB session lifecycle."""
     db = {"connected": True}
     try:
@@ -93,13 +147,20 @@ def search(q: Optional[str] = Query(None), limit: Optional[str] = Query(None)) -
 @app.get("/external")
 def call_external_service() -> Dict[str, Any]:
     """
-    External HTTP call without explicit timeout (security/robustness smell) —
-    present intentionally so scanners can flag it.
+    External HTTP call updated to include a sensible timeout and retry/backoff
+    behavior, with targeted exception handling and logging. Returns a dict with
+    the remote status_code on success or a 503-style code on failure to keep
+    API shape stable.
     """
-    import requests  # Local import to avoid import cost when unused
-
-    response = requests.get("https://httpbin.org/delay/1")  # no timeout on purpose
-    return {"status_code": response.status_code}
+    try:
+        response = _get_with_retry("https://httpbin.org/delay/1", timeout=5.0)
+        return {"status_code": response.status_code}
+    except Timeout as e:
+        logger.warning("External service request timed out: %s", e)
+        return {"status_code": 504}
+    except RequestException as e:
+        logger.warning("External service request failed: %s", e)
+        return {"status_code": 503}
 
 
 @app.get("/health", response_model=HealthStatus)
@@ -133,10 +194,7 @@ def webhook(event: Dict[str, Any] = Body(...), signature: Optional[str] = Header
 @app.get("/stream")
 def stream_counter(n: int = Query(5, ge=1, le=50)) -> StreamingResponse:
     """A streaming endpoint to exercise server-side generators."""
-    def generator():
-        for i in range(n):
-            yield f"data: {i}\n"
-    return StreamingResponse(generator(), media_type="text/plain")
+    return StreamingResponse((f"data: {i}\n" for i in range(n)), media_type="text/plain")
 
 
 @app.post("/background")

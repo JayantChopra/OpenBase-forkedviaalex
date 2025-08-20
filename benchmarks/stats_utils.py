@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy import stats
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Iterator
 from .utils import get_python_files
 
 def get_codebase_size_bucket(codebase_path: str) -> str:
@@ -13,7 +13,7 @@ def get_codebase_size_bucket(codebase_path: str) -> str:
     for file_path in python_files:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                total_loc += len([line for line in f if line.strip()])
+                total_loc += sum(1 for line in f if line.strip())
         except (UnicodeDecodeError, IOError):
             continue
     
@@ -105,7 +105,7 @@ class BenchmarkResult:
         self.raw_metrics = raw_metrics or {}
         self.confidence_interval = confidence_interval or (score, score)
     
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Any]:
         """Maintain backward compatibility with tuple unpacking."""
         return iter([self.score, self.details])
     
@@ -115,4 +115,4 @@ class BenchmarkResult:
             return f"{self.score:.2f}"
         
         ci_range = self.confidence_interval[1] - self.confidence_interval[0]
-        return f"{self.score:.2f} ±{ci_range/2:.1f}" 
+        return ''.join((f"{self.score:.2f}", " ±", f"{ci_range/2:.1f}"))

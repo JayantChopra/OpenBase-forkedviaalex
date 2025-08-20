@@ -14,6 +14,7 @@ from collections import defaultdict
 import os
 import time
 from datetime import datetime
+import logging
 
 from dotenv import load_dotenv
 
@@ -129,11 +130,11 @@ def _copy_tests_for_file(src_file: Path, dest_dir: Path) -> None:
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     out_path.write_text(cand.read_text())
-                except Exception:
-                    pass
-    except Exception:
+                except (OSError, UnicodeDecodeError) as e:
+                    logging.getLogger(__name__).exception("Failed to write test file %s for source %s", out_path, src_file)
+    except Exception as e:
         # Non-fatal: absence of tests is acceptable; testability benchmark will be skipped by default
-        pass
+        logging.getLogger(__name__).warning("Non-fatal error while copying tests for %s: %s", src_file, e, exc_info=True)
 
 @app.command()
 def compare_collections(
@@ -697,4 +698,4 @@ def compare(
 
 
 if __name__ == "__main__":
-    app() 
+    app()
